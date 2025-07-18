@@ -1,0 +1,18 @@
+# Ponteiros e referências grudados no tipo
+PointerAlignment: Left
+ReferenceAlignment: Left
+
+# Chave abre na mesma linha
+BreakBeforeBraces: Attach
+
+# Indentação
+IndentWidth: 4
+TabWidth: 4
+
+# Campos alinhados em structs/classes
+AlignConsecutiveDeclarations: true
+AlignConsecutiveAssignments: false
+AlignTrailingComments: true
+
+# Limite de coluna maior, se quiser evitar quebra automática
+ColumnLimit: 100

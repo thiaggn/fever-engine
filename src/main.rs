@@ -10,7 +10,7 @@ struct App {
 
 impl App {
     fn new() -> Self {
-        let window_server = WindowServer::start();
+        let mut window_server = WindowServer::start();
         let window = window_server.new_window(WindowOptions::default());
 
         Self {

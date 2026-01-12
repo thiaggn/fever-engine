@@ -6,8 +6,35 @@ mod win32;
 #[cfg(target_os = "windows")]
 use win32 as platform;
 
-pub use platform::Window;
-pub use platform::WindowServer;
+pub struct Window {
+    inner: platform::Window,
+}
+
+impl Window {
+    pub fn id(&self) -> u32 {
+        self.inner.id()
+    }
+}
+
+pub struct WindowServer {
+    inner: platform::WindowServer,
+}
+
+impl WindowServer {
+    pub fn start() -> Self {
+        Self {
+            inner: platform::WindowServer::start(),
+        }
+    }
+
+    pub fn poll(&mut self) -> Option<WindowMessage> {
+        self.inner.poll()
+    }
+
+	pub fn new_window(&mut self, options: WindowOptions) -> Window {
+		Window { inner: self.inner.new_window(options) }
+	}
+}
 
 #[derive(Debug, PartialEq)]
 pub enum MouseState {

@@ -1,6 +1,6 @@
 use std::{
-    ffi::{OsStr, c_void},
-    os::windows::ffi::OsStrExt,
+    ffi::OsString,
+    os::{raw::c_void, windows::ffi::OsStrExt},
     ptr,
 };
 
@@ -12,61 +12,26 @@ use windows_sys::Win32::{
         Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW},
     },
     UI::WindowsAndMessaging::{
-        CREATESTRUCTW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DispatchMessageW,
-        GWL_USERDATA, GWLP_USERDATA, GetWindowLongPtrW, IDC_ARROW, LoadCursorW, MSG, PM_REMOVE,
-        PeekMessageW, RegisterClassW, SW_SHOW, SetWindowLongPtrW, ShowWindow, TranslateMessage,
-        WM_CREATE, WM_NCCREATE, WNDCLASSW, WS_OVERLAPPEDWINDOW,
+        CW_USEDEFAULT, CreateWindowExW, GWLP_USERDATA, GetWindowLongPtrW, IDC_ARROW, LoadCursorW,
+        RegisterClassW, SetWindowLongPtrW, WNDCLASSW, WS_OVERLAPPEDWINDOW,
     },
 };
 
-#[derive(Clone, Copy)]
-pub struct SyncHandle(pub HWND);
-
-unsafe impl Send for SyncHandle {}
-
-unsafe impl Sync for SyncHandle {}
-
-pub struct WString {
-    data: Vec<u16>,
-}
-
-pub struct EventData {
-    wp: usize,
-    lp: isize,
-}
-
-type WndProc = unsafe extern "system" fn(HWND, u32, usize, isize) -> isize;
-
-impl WString {
-    pub fn new<'a>(str: &'a str) -> Self {
-        Self {
-            data: OsStr::new(str)
-                .encode_wide()
-                .chain(std::iter::once(0))
-                .collect(),
-        }
-    }
-
-    pub fn as_ptr(&self) -> *const u16 {
-        return self.data.as_ptr();
+pub unsafe fn set_user_data<T>(handle: HWND, data: *mut T) {
+    unsafe {
+        SetWindowLongPtrW(handle, GWLP_USERDATA, data as isize);
     }
 }
 
-impl<'a> Into<WString> for &'a str {
-    fn into(self) -> WString {
-        return WString::new(self);
-    }
+pub unsafe fn get_user_data(handle: HWND) -> isize {
+    unsafe { GetWindowLongPtrW(handle, GWLP_USERDATA) }
 }
 
-impl Into<WString> for String {
-    fn into(self) -> WString {
-        return WString::new(self.as_str());
-    }
-}
-
-pub struct ClassAttributes<'a> {
-    pub name: &'a WString,
-    pub proc: unsafe extern "system" fn(*mut c_void, u32, usize, isize) -> isize,
+pub fn wide_string(str: &str) -> Vec<u16> {
+    OsString::from(str)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
 }
 
 #[inline]
@@ -74,15 +39,16 @@ fn rgb(r: u8, g: u8, b: u8) -> u32 {
     (r as u32) | ((g as u32) << 8) | ((b as u32) << 16)
 }
 
-pub unsafe fn use_window_procedure(proc: WndProc) {
-    let class_name = WString::new("fever_class");
-    let instance = unsafe { GetModuleHandleW(ptr::null_mut()) };
+type WndProc = unsafe extern "system" fn(HWND, u32, usize, isize) -> isize;
 
-    let mut wc = WNDCLASSW {
+pub unsafe fn register_class(name: &str, proc: WndProc) {
+    let name = wide_string(name);
+
+    let wc = WNDCLASSW {
+        lpszClassName: name.as_ptr(),
         hCursor: unsafe { LoadCursorW(ptr::null_mut(), IDC_ARROW) },
         lpfnWndProc: Some(proc),
-        lpszClassName: class_name.as_ptr(),
-        hInstance: instance,
+        hInstance: unsafe { GetModuleHandleW(ptr::null_mut()) },
         hbrBackground: unsafe { CreateSolidBrush(rgb(20, 20, 20)) },
         ..Default::default()
     };
@@ -92,61 +58,26 @@ pub unsafe fn use_window_procedure(proc: WndProc) {
     }
 }
 
-pub unsafe fn create_window(user_data: *mut c_void) {
-    let window_title = WString::new("Iniciando...");
-    let class_name = WString::new("fever_class");
+pub unsafe fn create_window<T>(user_data: *mut T) {
     let instance = unsafe { GetModuleHandleW(ptr::null_mut()) };
+    let class_name = wide_string("fever-class");
+    let name = wide_string("");
 
     unsafe {
         CreateWindowExW(
-            0,
-            class_name.as_ptr(),
-            window_title.as_ptr(),
-            WS_OVERLAPPEDWINDOW,
-            CW_USEDEFAULT,
-            CW_USEDEFAULT,
-            CW_USEDEFAULT,
-            CW_USEDEFAULT,
-            ptr::null_mut(),
-            ptr::null_mut(),
-            instance,
-            user_data,
+            0,                        // estilos estendidos
+            class_name.as_ptr(),      // nome da classe
+            name.as_ptr(),            // nome da janela
+            WS_OVERLAPPEDWINDOW,      // estilo
+            CW_USEDEFAULT,            // x
+            CW_USEDEFAULT,            // y
+            CW_USEDEFAULT,            // altura
+            CW_USEDEFAULT,            // largura
+            ptr::null_mut(),          // pai
+            ptr::null_mut(),          // menu
+            instance,                 // instância
+            user_data as *mut c_void, // userdata
         );
-    }
-}
-
-pub unsafe fn def_wind_proc(handle: HWND, msg: u32, wp: usize, lp: isize) -> isize {
-    return unsafe { DefWindowProcW(handle, msg, wp, lp) };
-}
-
-pub unsafe fn set_user_data<T>(handle: HWND, data: *mut T) {
-    unsafe {
-        SetWindowLongPtrW(handle, GWLP_USERDATA, data as isize);
-    }
-}
-
-pub unsafe fn get_user_data(handle: HWND) -> isize {
-    unsafe { GetWindowLongPtrW(handle, GWL_USERDATA) }
-}
-
-pub unsafe fn get_creation_struct(lp: isize) -> *mut CREATESTRUCTW {
-    return lp as *mut CREATESTRUCTW;
-}
-
-pub struct Message {
-    inner: MSG,
-}
-
-pub unsafe fn peek_message() -> bool {
-    unsafe {
-        let mut msg = MSG::default();
-        let has_message = PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE) != 0;
-        if (has_message) {
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
-
-        return has_message;
     }
 }
 
@@ -154,8 +85,8 @@ pub fn is_dark_mode() -> bool {
     let mut value: u32 = 1;
     let mut size = std::mem::size_of::<u32>() as u32;
 
-    let path = WString::new("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize");
-    let key = WString::new("AppsUseLightTheme");
+    let path = wide_string("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize");
+    let key = wide_string("AppsUseLightTheme");
 
     let status = unsafe {
         RegGetValueW(

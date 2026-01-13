@@ -1,42 +1,82 @@
+#![allow(unused)]
+
 mod api;
 
 use std::{
-    cell::{Cell, RefCell},
     collections::VecDeque,
-    ffi::c_void,
+    num::NonZeroIsize,
     ptr,
-    rc::Rc,
-    sync::{Arc, Mutex, OnceLock},
-};
-
-use windows_sys::Win32::{
-    Foundation::{HWND, RECT},
-    UI::WindowsAndMessaging::{
-        AdjustWindowRectEx, SW_SHOW, SWP_NOMOVE, SWP_NOZORDER, SetWindowPos, SetWindowTextW, ShowWindow, WM_CLOSE, WM_CREATE, WM_DESTROY, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_NCCREATE, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SIZE, WS_OVERLAPPEDWINDOW
+    sync::{
+        Arc, Mutex,
+        mpsc::{self, Receiver, Sender},
     },
 };
 
-use crate::window::{
-    MouseButton, MouseState, WindowEvent, WindowMessage, WindowOptions,
-    win32::api::{SyncHandle, WString},
+use raw_window_handle::{self as rwh, RawWindowHandle, Win32WindowHandle};
+
+use windows_sys::Win32::{
+    Foundation::{HWND, RECT, TRUE},
+    UI::WindowsAndMessaging::{
+        AdjustWindowRectEx, CREATESTRUCTW, DefWindowProcW, DestroyWindow, DispatchMessageW, MSG,
+        PM_REMOVE, PeekMessageW, SW_SHOW, SWP_NOMOVE, SWP_NOZORDER, SetWindowPos, SetWindowTextW,
+        ShowWindow, TranslateMessage, WM_CLOSE, WM_CREATE, WM_LBUTTONDOWN, WM_LBUTTONUP,
+        WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_NCCREATE, WM_RBUTTONDOWN, WM_RBUTTONUP,
+        WM_SIZE, WNDCLASSEXW, WNDCLASSW, WS_OVERLAPPEDWINDOW,
+    },
 };
 
-struct WindowState {
-    running: bool,
-    width: u32,
-    height: u32,
-    visible: bool,
+use crate::window::{MouseButton, MouseState, WindowEvent, WindowOptions};
+
+enum ClientRequest {
+    CreateWindow { options: WindowOptions },
+    Terminate,
 }
 
+enum ServerResponse {
+    WindowCreated { window: Window },
+    None,
+}
+
+struct WindowState {
+    width: u32,
+    height: u32,
+}
+
+pub struct NativeHandle {
+    handle: SyncHandle,
+}
+
+impl rwh::HasDisplayHandle for NativeHandle {
+    fn display_handle(&self) -> Result<rwh::DisplayHandle<'_>, rwh::HandleError> {
+        Ok(rwh::DisplayHandle::windows())
+    }
+}
+
+impl rwh::HasWindowHandle for NativeHandle {
+    fn window_handle(&self) -> Result<rwh::WindowHandle<'_>, rwh::HandleError> {
+        let handle = NonZeroIsize::new(self.handle.0 as isize)
+            .expect("o handle da janela não deve ser nulo");
+        let raw = RawWindowHandle::Win32(Win32WindowHandle::new(handle));
+        unsafe { Ok(rwh::WindowHandle::borrow_raw(raw)) }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct SyncHandle(HWND);
+
+unsafe impl Sync for SyncHandle {}
+unsafe impl Send for SyncHandle {}
+
 pub struct Window {
-    id: u32,
-    handle: api::SyncHandle,
+    handle: SyncHandle,
     state: Arc<Mutex<WindowState>>,
 }
 
 impl Window {
-    pub fn id(&self) -> u32 {
-        return self.id;
+    pub fn get_native(&self) -> NativeHandle {
+        return NativeHandle {
+            handle: self.handle,
+        };
     }
 
     pub fn set_size(&self, width: u32, height: u32) {
@@ -68,7 +108,7 @@ impl Window {
     }
 
     pub fn set_title(&self, title: &str) {
-        let title: WString = title.into();
+        let title = api::wide_string(title);
 
         unsafe {
             SetWindowTextW(self.handle.0, title.as_ptr());
@@ -76,286 +116,350 @@ impl Window {
     }
 
     pub fn show(&self) {
-        let mut state = self.state.lock().unwrap();
-        state.visible = true;
-
         unsafe {
             ShowWindow(self.handle.0, SW_SHOW);
         }
     }
 }
 
+/// Estrutura que armazena eventos pendentes da janela. `WindowServer` e `WindowClient`
+/// compartilham uma referência para a mesma instância de `Events`
+struct Events {
+    queue: VecDeque<WindowEvent>,
+    resize: Option<WindowEvent>,
+}
+
 pub struct WindowServer {
-    inner: Rc<ServerInner>,
+    events: Arc<Mutex<Events>>,
+    req: Receiver<ClientRequest>,
+    res: Sender<ServerResponse>,
+    client: Option<WindowClient>,
+    active: bool,
 }
 
 impl WindowServer {
-    pub fn start() -> Self {
+    pub fn new() -> Self {
+        let class_name = api::wide_string("fever_window");
         unsafe {
-            api::use_window_procedure(wndproc);
+            api::register_class("fever-class", Self::wnd_proc);
         }
+
+        let res = mpsc::channel::<ServerResponse>();
+        let req = mpsc::channel::<ClientRequest>();
+
+        let events = Arc::new(Mutex::new(Events {
+            queue: VecDeque::new(),
+            resize: None,
+        }));
+
+        let client = WindowClient {
+            events: events.clone(),
+            req: req.0,
+            res: res.1,
+        };
+
         return Self {
-            inner: Rc::new(ServerInner::new()),
+            events: events.clone(),
+            req: req.1,
+            res: res.0,
+            client: Some(client),
+            active: true,
         };
     }
 
-    pub fn new_window(&self, options: WindowOptions) -> Window {
-        let mut ctx = CreateCtx {
-            window: None,
-            options: options,
-            server: self.inner.clone(),
-        };
+    pub fn run(&mut self) {
         unsafe {
-            api::create_window(&mut ctx as *mut _ as *mut _);
+            api::create_window::<()>(ptr::null_mut());
         }
+
+        loop {
+            if !self.active {
+                break;
+            }
+            self.process_client_requests();
+            unsafe {
+                let mut msg = MSG::default();
+                PeekMessageW(&mut msg, ptr::null_mut(), 0, 0, PM_REMOVE);
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        }
+    }
+
+    pub fn client(&mut self) -> WindowClient {
+        if let Some(client) = self.client.take() {
+            return client;
+        } else {
+            panic!("apenas uma sessão pode ser criada por vez.")
+        }
+    }
+
+    fn process_client_requests(&mut self) {
+        if let Ok(req) = self.req.try_recv() {
+            match req {
+                ClientRequest::CreateWindow { options } => {
+                    let window = self.create_window(options);
+                    self.res
+                        .send(ServerResponse::WindowCreated { window })
+                        .unwrap();
+                }
+
+                ClientRequest::Terminate => {
+                    self.active = false;
+                }
+            }
+        }
+    }
+
+    fn create_window(&mut self, options: WindowOptions) -> Window {
+        let mut ctx = CreateCtx {
+            opt: options,
+            events: self.events.clone(),
+            window: None,
+        };
+
+        unsafe {
+            api::create_window(&mut ctx);
+        }
+
         return ctx.window.unwrap();
     }
 
-    pub fn poll(&self) -> Option<WindowMessage> {
+    unsafe extern "system" fn wnd_proc(h: HWND, msg: u32, wp: usize, lp: isize) -> isize {
+        match msg {
+            WM_NCCREATE => unsafe {
+                let Some(ctx) = CreateCtx::from_lparam(lp) else {
+                    return -1;
+                };
+
+                let state = Arc::new(Mutex::new(WindowState {
+                    width: ctx.opt.width,
+                    height: ctx.opt.height,
+                }));
+
+                let run_ctx = Box::into_raw(Box::new(RunCtx {
+                    state: state.clone(),
+                    events: ctx.events.clone(),
+                }));
+
+                let window = Window {
+                    handle: SyncHandle(h),
+                    state: state.clone(),
+                };
+
+                ctx.window = Some(window);
+                api::set_user_data(h, run_ctx);
+                return 1;
+            },
+
+            WM_CREATE => unsafe {
+                let Some(ctx) = CreateCtx::from_lparam(lp) else {
+                    return -1;
+                };
+
+                let Some(window) = &mut ctx.window else {
+                    return -1;
+                };
+
+                window.set_size(ctx.opt.width, ctx.opt.height);
+                window.set_title(ctx.opt.title.as_str());
+                if api::is_dark_mode() {
+                    api::enable_dark_titlebar(h);
+                }
+                window.show();
+                return 1;
+            },
+
+            _ => {}
+        }
+
         unsafe {
-            api::peek_message();
+            let Some(ctx) = RunCtx::from_hwnd(h) else {
+                return DefWindowProcW(h, msg, wp, lp);
+            };
+            return Self::on_event(ctx, h, msg, wp, lp);
         }
-        return self.inner.consume_next_event();
-    }
-}
-
-struct ServerInner {
-    next_id: Cell<u32>,
-    queue: RefCell<VecDeque<WindowMessage>>,
-}
-
-impl ServerInner {
-    fn new() -> Self {
-        return Self {
-            next_id: Cell::new(1),
-            queue: RefCell::new(VecDeque::with_capacity(64)),
-        };
     }
 
-    fn enqueue_event(&self, event: WindowMessage) {
-        self.queue.borrow_mut().push_back(event);
-    }
-
-    fn consume_next_event(&self) -> Option<WindowMessage> {
-        return self.queue.borrow_mut().pop_front();
-    }
-
-    fn produce_id(&self) -> u32 {
-        let id = self.next_id.get();
-        self.next_id.set(id + 1);
-        return id;
-    }
-}
-
-unsafe extern "system" fn window_event(event: NativeEvent, ctx: &RunCtx) -> isize {
-    match event.id {
-        WM_SIZE => event.unhandled(),
-
-        WM_LBUTTONDOWN => {
-            ctx.send_event(WindowEvent::Click {
-                x: event.x_param() as i32,
-                y: event.y_param() as i32,
-                state: MouseState::Down,
-                button: MouseButton::Left,
-            });
-            return 0;
-        }
-
-        WM_MBUTTONDOWN => {
-            ctx.send_event(WindowEvent::Click {
-                x: event.x_param() as i32,
-                y: event.y_param() as i32,
-                state: MouseState::Down,
-                button: MouseButton::Middle,
-            });
-            return 0;
-        }
-
-        WM_RBUTTONDOWN => {
-            ctx.send_event(WindowEvent::Click {
-                x: event.x_param() as i32,
-                y: event.y_param() as i32,
-                state: MouseState::Down,
-                button: MouseButton::Right,
-            });
-            return 0;
-        }
-
-        WM_LBUTTONUP => {
-            ctx.send_event(WindowEvent::Click {
-                x: event.x_param() as i32,
-                y: event.y_param() as i32,
-                state: MouseState::Up,
-                button: MouseButton::Left,
-            });
-            return 0;
-        }
-
-        WM_MBUTTONUP => {
-            ctx.send_event(WindowEvent::Click {
-                x: event.x_param() as i32,
-                y: event.y_param() as i32,
-                state: MouseState::Up,
-                button: MouseButton::Middle,
-            });
-            return 0;
-        }
-
-        WM_RBUTTONUP => {
-            ctx.send_event(WindowEvent::Click {
-                x: event.x_param() as i32,
-                y: event.y_param() as i32,
-                state: MouseState::Up,
-                button: MouseButton::Right,
-            });
-            return 0;
-        }
-
-		WM_CLOSE => {
-			ctx.send_event(WindowEvent::Close);
-			return 0;
-		}
-
-        _ => event.unhandled(),
-    }
-}
-
-unsafe extern "system" fn wndproc(handle: HWND, msg: u32, wp: usize, lp: isize) -> isize {
-    match msg {
-        WM_NCCREATE => unsafe {
-            let Some(ctx) = get_create_context(lp) else {
+    unsafe extern "system" fn on_event(
+        ctx: &mut RunCtx,
+        h: HWND,
+        msg: u32,
+        wp: usize,
+        lp: isize,
+    ) -> isize {
+        match msg {
+            WM_SIZE => {
+                ctx.send_event(WindowEvent::Resize {
+                    width: (lp & 0xFFFF) as u32,
+                    height: ((lp >> 16) & 0xFFFF) as u32,
+                });
                 return 0;
-            };
-
-            let window_id = ctx.server.produce_id();
-
-            let state = Arc::new(Mutex::new(WindowState {
-                width: ctx.options.width,
-                height: ctx.options.height,
-                running: true,
-                visible: true,
-            }));
-
-            let run_ctx = Box::into_raw(Box::new(RunCtx {
-                state: state.clone(),
-                server: ctx.server.clone(),
-                window_id: window_id,
-            }));
-
-            let window = Window {
-				id: window_id,
-                handle: api::SyncHandle(handle),
-                state: state.clone(),
-            };
-
-            ctx.window = Some(window);
-            api::set_user_data(handle, run_ctx);
-            return 1;
-        },
-
-        WM_CREATE => unsafe {
-            let Some(ctx) = get_create_context(lp) else {
-                return -1;
-            };
-
-            let Some(window) = &mut ctx.window else {
-                return -1;
-            };
-
-            window.set_size(ctx.options.width, ctx.options.height);
-            window.set_title(ctx.options.title.as_str());
-
-            if api::is_dark_mode() {
-                api::enable_dark_titlebar(handle);
             }
 
-            window.show();
-            return 0;
-        },
+            WM_CLOSE => {
+                ctx.send_event(WindowEvent::Close);
+                unsafe {
+                    DestroyWindow(h);
+                    Box::from_raw(ctx);
+                }
+                return 0;
+            }
 
-        WM_DESTROY => unsafe {
-            let Some(ctx) = get_run_context(handle) else {
-                return api::def_wind_proc(handle, msg, wp, lp);
-            };
+            WM_LBUTTONDOWN => {
+                ctx.send_event(WindowEvent::Click {
+                    x: (lp & 0xFFFF) as i32,
+                    y: ((lp >> 16) & 0xFFFF) as i32,
+                    state: MouseState::Down,
+                    button: MouseButton::Left,
+                });
+                return 0;
+            }
 
-            // Garante que o run context seja dropado
-            Box::from_raw(ctx);
-        },
-        _ => {}
-    }
+            WM_MBUTTONDOWN => {
+                ctx.send_event(WindowEvent::Click {
+                    x: (lp & 0xFFFF) as i32,
+                    y: ((lp >> 16) & 0xFFFF) as i32,
+                    state: MouseState::Down,
+                    button: MouseButton::Middle,
+                });
+                return 0;
+            }
 
-    unsafe {
-        let Some(ctx) = get_run_context(handle) else {
-            return api::def_wind_proc(handle, msg, wp, lp);
-        };
+            WM_RBUTTONDOWN => {
+                ctx.send_event(WindowEvent::Click {
+                    x: (lp & 0xFFFF) as i32,
+                    y: ((lp >> 16) & 0xFFFF) as i32,
+                    state: MouseState::Down,
+                    button: MouseButton::Right,
+                });
+                return 0;
+            }
 
-        return window_event(
-            NativeEvent {
-                handle,
-                id: msg,
-                wp,
-                lp,
-            },
-            ctx,
-        );
+            WM_LBUTTONUP => {
+                ctx.send_event(WindowEvent::Click {
+                    x: (lp & 0xFFFF) as i32,
+                    y: ((lp >> 16) & 0xFFFF) as i32,
+                    state: MouseState::Up,
+                    button: MouseButton::Left,
+                });
+                return 0;
+            }
+
+            WM_MBUTTONUP => {
+                ctx.send_event(WindowEvent::Click {
+                    x: (lp & 0xFFFF) as i32,
+                    y: ((lp >> 16) & 0xFFFF) as i32,
+                    state: MouseState::Up,
+                    button: MouseButton::Middle,
+                });
+                return 0;
+            }
+
+            WM_RBUTTONUP => {
+                ctx.send_event(WindowEvent::Click {
+                    x: (lp & 0xFFFF) as i32,
+                    y: ((lp >> 16) & 0xFFFF) as i32,
+                    state: MouseState::Up,
+                    button: MouseButton::Right,
+                });
+                return 0;
+            }
+
+            WM_MOUSEMOVE => {
+                ctx.send_event(WindowEvent::MouseMove {
+                    x: (lp & 0xFFFF) as i32,
+                    y: ((lp >> 16) & 0xFFFF) as i32,
+                });
+                return 0;
+            }
+
+            _ => unsafe { DefWindowProcW(h, msg, wp, lp) },
+        }
     }
 }
 
+pub struct WindowClient {
+    events: Arc<Mutex<Events>>,
+    res: Receiver<ServerResponse>,
+    req: Sender<ClientRequest>,
+}
+
+impl WindowClient {
+    pub fn new_window(&self, options: WindowOptions) -> Window {
+        self.req
+            .send(ClientRequest::CreateWindow { options })
+            .expect("falhou ao submeter a mensagem de requisição para criação da janela");
+
+        let res = self
+            .res
+            .recv()
+            .expect("falhou em obter resposta da criação da janela");
+
+        if let ServerResponse::WindowCreated { window } = res {
+            return window;
+        } else {
+            panic!("a resposta do servidor não corresponde à requisição.");
+        }
+    }
+
+    pub fn poll(&self) -> Option<WindowEvent> {
+        let mut events = self.events.lock().unwrap();
+        if let Some(WindowEvent::Resize { .. }) = &events.resize {
+            return events.resize.take();
+        }
+        return events.queue.pop_front();
+    }
+
+    pub fn terminate(&self) {
+        self.req.send(ClientRequest::Terminate);
+    }
+}
+
+/// Contexto usado apenas durante a criação da janela.
 struct CreateCtx {
+    events: Arc<Mutex<Events>>,
+    opt: WindowOptions,
     window: Option<Window>,
-    options: WindowOptions,
-    server: Rc<ServerInner>,
 }
 
-unsafe fn get_create_context<'a>(lp: isize) -> Option<&'a mut CreateCtx> {
-    unsafe {
-        api::get_creation_struct(lp).as_mut().and_then(|ptr| {
-            let p2 = ptr.lpCreateParams as *mut CreateCtx;
-            p2.as_mut()
-        })
+impl CreateCtx {
+    unsafe fn from_lparam<'a>(lp: isize) -> Option<&'a mut CreateCtx> {
+        unsafe {
+            let lp = lp as *mut CREATESTRUCTW;
+            return lp.as_mut().and_then(|ptr| {
+                let p2 = ptr.lpCreateParams as *mut CreateCtx;
+                p2.as_mut()
+            });
+        }
     }
 }
 
+/// Contexto de execução da janela já criada.
 struct RunCtx {
+    events: Arc<Mutex<Events>>,
     state: Arc<Mutex<WindowState>>,
-    server: Rc<ServerInner>,
-    window_id: u32,
 }
 
 impl RunCtx {
-    pub fn send_event(&self, event: WindowEvent) {
-        self.server.enqueue_event(WindowMessage {
-            window_id: self.window_id,
-            event,
-        });
-    }
-}
-
-unsafe fn get_run_context<'a>(handle: HWND) -> Option<&'a mut RunCtx> {
-    unsafe {
-        let data = api::get_user_data(handle) as *mut RunCtx;
-        return data.as_mut();
-    }
-}
-
-#[repr(C)]
-struct NativeEvent {
-    handle: HWND,
-    id: u32,
-    wp: usize,
-    lp: isize,
-}
-
-impl NativeEvent {
-    pub fn unhandled(self) -> isize {
-        return unsafe { api::def_wind_proc(self.handle, self.id, self.wp, self.lp) };
+    unsafe fn from_hwnd<'a>(handle: HWND) -> Option<&'a mut RunCtx> {
+        unsafe {
+            let data = api::get_user_data(handle) as *mut RunCtx;
+            return data.as_mut();
+        }
     }
 
-    pub fn x_param(&self) -> i16 {
-        return (self.lp & 0xFFFF) as i16;
-    }
+    fn send_event(&mut self, event: WindowEvent) {
+        let mut events = self.events.lock().unwrap();
 
-    pub fn y_param(&self) -> i16 {
-        return ((self.lp >> 16) & 0xFFFF) as i16;
+        match &event {
+            WindowEvent::Resize { .. } => {
+                events.resize = Some(event);
+            }
+
+            _ => {
+                events.queue.push_back(event);
+            }
+        }
     }
 }

@@ -1,5 +1,7 @@
 #![allow(unused)]
 
+use raw_window_handle as rwh;
+
 #[cfg(target_os = "windows")]
 mod win32;
 
@@ -11,8 +13,10 @@ pub struct Window {
 }
 
 impl Window {
-    pub fn id(&self) -> u32 {
-        self.inner.id()
+    pub fn handle(&self) -> NativeHandle {
+        NativeHandle {
+            inner: self.inner.get_native(),
+        }
     }
 }
 
@@ -21,19 +25,44 @@ pub struct WindowServer {
 }
 
 impl WindowServer {
-    pub fn start() -> Self {
+    pub fn new() -> Self {
         Self {
-            inner: platform::WindowServer::start(),
+            inner: platform::WindowServer::new(),
         }
     }
 
-    pub fn poll(&mut self) -> Option<WindowMessage> {
-        self.inner.poll()
+    /// Loop principal do servidor que processa mensagens do SO e do cliente.
+    pub fn run(&mut self) {
+        self.inner.run();
     }
 
-	pub fn new_window(&mut self, options: WindowOptions) -> Window {
-		Window { inner: self.inner.new_window(options) }
-	}
+	/// Cria uma sessão cliente única. Apenas uma sessão de cliente deve ser
+	/// criada durante a execução de todo o programa.
+    pub fn client(&mut self) -> WindowClient {
+        WindowClient {
+            inner: self.inner.client(),
+        }
+    }
+}
+
+pub struct WindowClient {
+    inner: platform::WindowClient,
+}
+
+impl WindowClient {
+    pub fn new_window(&self, options: WindowOptions) -> Window {
+        Window {
+            inner: self.inner.new_window(options),
+        }
+    }
+
+    pub fn poll(&self) -> Option<WindowEvent> {
+        return self.inner.poll();
+    }
+
+    pub fn terminate(&mut self) {
+        return self.inner.terminate();
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -49,7 +78,6 @@ pub enum MouseButton {
     Right,
 }
 
-#[derive(Debug)]
 pub enum WindowEvent {
     Click {
         x: i32,
@@ -89,5 +117,21 @@ impl Default for WindowOptions {
             width: 1200,
             height: 675,
         }
+    }
+}
+
+pub struct NativeHandle {
+    inner: platform::NativeHandle,
+}
+
+impl rwh::HasWindowHandle for NativeHandle {
+    fn window_handle(&self) -> Result<rwh::WindowHandle<'_>, rwh::HandleError> {
+        self.inner.window_handle()
+    }
+}
+
+impl rwh::HasDisplayHandle for NativeHandle {
+    fn display_handle(&self) -> Result<rwh::DisplayHandle<'_>, rwh::HandleError> {
+        self.inner.display_handle()
     }
 }

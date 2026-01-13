@@ -133,12 +133,11 @@ pub struct WindowServer {
     events: Arc<Mutex<Events>>,
     req: Receiver<ClientRequest>,
     res: Sender<ServerResponse>,
-    client: Option<WindowClient>,
     active: bool,
 }
 
 impl WindowServer {
-    pub fn new() -> Self {
+    pub fn connect() -> (Self, WindowClient) {
         let class_name = api::wide_string("fever_window");
         unsafe {
             api::register_class("fever-class", Self::wnd_proc);
@@ -158,13 +157,14 @@ impl WindowServer {
             res: res.1,
         };
 
-        return Self {
+		let server = Self {
             events: events.clone(),
             req: req.1,
             res: res.0,
-            client: Some(client),
             active: true,
         };
+
+        return (server, client);
     }
 
     pub fn run(&mut self) {
@@ -183,14 +183,6 @@ impl WindowServer {
                 TranslateMessage(&msg);
                 DispatchMessageW(&msg);
             }
-        }
-    }
-
-    pub fn client(&mut self) -> WindowClient {
-        if let Some(client) = self.client.take() {
-            return client;
-        } else {
-            panic!("apenas uma sessão pode ser criada por vez.")
         }
     }
 

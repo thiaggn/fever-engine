@@ -8,8 +8,7 @@ mod window;
 mod renderer;
 
 fn main() {
-    let mut server = WindowServer::new();
-    let client = server.client();
+    let (mut server, client) = WindowServer::connect();
 
     let trd = std::thread::spawn(move || {
         let mut app = App::new(client);

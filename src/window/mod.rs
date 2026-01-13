@@ -25,23 +25,18 @@ pub struct WindowServer {
 }
 
 impl WindowServer {
-    pub fn new() -> Self {
-        Self {
-            inner: platform::WindowServer::new(),
-        }
+    pub fn connect() -> (Self, WindowClient) {
+        let (server, client) = platform::WindowServer::connect();
+
+        return (
+            WindowServer { inner: server },
+            WindowClient { inner: client },
+        );
     }
 
     /// Loop principal do servidor que processa mensagens do SO e do cliente.
     pub fn run(&mut self) {
         self.inner.run();
-    }
-
-	/// Cria uma sessão cliente única. Apenas uma sessão de cliente deve ser
-	/// criada durante a execução de todo o programa.
-    pub fn client(&mut self) -> WindowClient {
-        WindowClient {
-            inner: self.inner.client(),
-        }
     }
 }
 

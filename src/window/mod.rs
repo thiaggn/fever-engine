@@ -34,8 +34,7 @@ impl WindowServer {
         );
     }
 
-    /// Loop principal do servidor que processa mensagens do SO e do cliente.
-    pub fn run(&mut self) {
+    pub fn run(mut self) {
         self.inner.run();
     }
 }
@@ -51,9 +50,9 @@ impl WindowClient {
         }
     }
 
-    pub fn poll(&self) -> Option<WindowEvent> {
-        return self.inner.poll();
-    }
+	pub fn poll_events<H: FnMut(Input)>(&self, handler: H) {
+		self.inner.poll_events(handler);
+	}
 
     pub fn terminate(&mut self) {
         return self.inner.terminate();
@@ -73,7 +72,7 @@ pub enum MouseButton {
     Right,
 }
 
-pub enum WindowEvent {
+pub enum Input {
     Click {
         x: i32,
         y: i32,
@@ -96,7 +95,7 @@ pub enum WindowEvent {
 
 pub struct WindowMessage {
     pub window_id: u32,
-    pub event: WindowEvent,
+    pub event: Input,
 }
 
 pub struct WindowOptions {

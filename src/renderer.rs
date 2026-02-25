@@ -105,31 +105,30 @@ impl RenderSystem {
 			.device
 			.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
 
-		{
-			let mut render_pass =
-				encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-					label: None,
-					color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-						view: &view,
-						depth_slice: None,
-						resolve_target: None,
-						ops: wgpu::Operations {
-							load: wgpu::LoadOp::Clear(wgpu::Color::GREEN),
-							store: wgpu::StoreOp::Store,
-						},
-					})],
-					depth_stencil_attachment: None,
-					timestamp_writes: None,
-					occlusion_query_set: None,
-					multiview_mask: None,
-				});
+		let mut render_pass =
+			encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+				label: None,
+				color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+					view: &view,
+					depth_slice: None,
+					resolve_target: None,
+					ops: wgpu::Operations {
+						load: wgpu::LoadOp::Clear(wgpu::Color::GREEN),
+						store: wgpu::StoreOp::Store,
+					},
+				})],
+				depth_stencil_attachment: None,
+				timestamp_writes: None,
+				occlusion_query_set: None,
+				multiview_mask: None,
+			});
 
-			for renderer in self.renderers.iter_mut() {
-				renderer.prepare();
-				renderer.render(&mut render_pass);
-			}
+		for renderer in self.renderers.iter_mut() {
+			renderer.prepare();
+			renderer.render(&mut render_pass);
 		}
-
+		
+		drop(render_pass);
 		self.queue.submit(Some(encoder.finish()));
 		frame.present();
 	}

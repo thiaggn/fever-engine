@@ -77,8 +77,8 @@ impl RenderSystem {
 
 	/// Altera as dimensões da superfície de renderização.
 	pub fn set_size(&mut self, width: u32, height: u32) {
-		match &mut self.surface {
-			Some(s) => {
+		match self.surface {
+			Some(ref mut s) => {
 				s.config.width = width;
 				s.config.height = height;
 				s.inner.configure(&self.device, &s.config);

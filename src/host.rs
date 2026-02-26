@@ -13,13 +13,14 @@ use winit::{
 
 use crate::{
 	input::{InputState, InputSystem},
-	renderer::{self, RenderSystem},
+	renderer::{self, RenderSurface, RenderSystem},
 	state::{StateSystem, Tick},
 };
 
 /// Host mantém o estado global da aplicação.
 pub struct Host {
 	renderer: RenderSystem,
+	surface: Option<RenderSurface>,
 	input: InputSystem,
 	state: StateSystem,
 	clock: Clock,
@@ -32,6 +33,7 @@ impl Host {
 			input: InputSystem::new(),
 			state: StateSystem::new(),
 			clock: Clock::new(),
+			surface: None,
 		}
 	}
 
@@ -40,7 +42,16 @@ impl Host {
 		(tick.delta, tick.elapsed) = self.clock.tock();
 
 		self.state.update(tick, self.input.current_state());
-		self.renderer.draw();
+
+		if let Some(surface) = &self.surface {
+			self.renderer.draw(surface);
+		}
+	}
+	
+	fn resize(&mut self, width: u32, height: u32) {
+		if let Some(surface) = &mut self.surface {
+			self.renderer.configure_size(surface, width, height);
+		}
 	}
 }
 
@@ -55,7 +66,7 @@ impl ApplicationHandler for Host {
 			.expect("falhou em criar a janela principal.")
 			.into();
 
-		self.renderer.set_target(window);
+		self.surface = Some(self.renderer.create_surface(window.clone()));
 	}
 
 	fn window_event(&mut self, el: &ActiveEventLoop, _: WindowId, ev: WindowEvent) {
@@ -67,7 +78,7 @@ impl ApplicationHandler for Host {
 			MouseInput { state, button, .. } => self.input.update_mouse(state, button),
 			RedrawRequested                  => self.redraw(),
 			CloseRequested                   => el.exit(),
-			Resized(size)                    => self.renderer.set_size(size.width, size.height),
+			Resized(size)                    => self.resize(size.width, size.height),
 			_ => {}
 		};
 	}

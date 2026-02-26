@@ -1,13 +1,12 @@
 #![allow(unused)]
 
-use winit::event_loop::{ControlFlow, EventLoop};
-
-use crate::host::Host;
-
 mod host;
 mod input;
 mod renderer;
 mod state;
+
+use winit::event_loop::{ControlFlow, EventLoop};
+use crate::host::Host;
 
 fn main() {
 	let event_loop = EventLoop::new().unwrap();

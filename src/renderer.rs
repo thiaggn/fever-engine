@@ -8,7 +8,6 @@ const TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8UnormSrgb;
 
 /// Reune o estado global do sistema de renderização.
 pub struct RenderSystem {
-	surface: Option<Surface>,
 	device: wgpu::Device,
 	adapter: wgpu::Adapter,
 	queue: wgpu::Queue,
@@ -16,13 +15,12 @@ pub struct RenderSystem {
 	renderers: RendererVec,
 }
 
-struct Surface {
+pub struct RenderSurface {
 	inner: wgpu::Surface<'static>,
 	config: wgpu::SurfaceConfiguration,
 }
 
 impl RenderSystem {
-	/// Cria um renderizador sem um alvo de renderização.
 	pub fn new() -> Self {
 		let instance = wgpu::Instance::new(&Default::default());
 
@@ -45,7 +43,6 @@ impl RenderSystem {
 		renderers.add(TriangleRenderer::new(&device, TEXTURE_FORMAT));
 
 		Self {
-			surface: None,
 			device,
 			queue,
 			instance,
@@ -54,8 +51,7 @@ impl RenderSystem {
 		}
 	}
 
-	/// Usa `target` como superfície de renderização.
-	pub fn set_target(&mut self, target: Arc<Window>) {
+	pub fn create_surface(&self, target: Arc<Window>) -> RenderSurface {
 		let PhysicalSize { width, height } = target.inner_size();
 
 		let surface = self
@@ -69,29 +65,19 @@ impl RenderSystem {
 
 		surface.configure(&self.device, &config);
 
-		self.surface = Some(Surface {
+		RenderSurface {
 			inner: surface,
 			config,
-		})
-	}
-
-	/// Altera as dimensões da superfície de renderização.
-	pub fn set_size(&mut self, width: u32, height: u32) {
-		match self.surface {
-			Some(ref mut s) => {
-				s.config.width = width;
-				s.config.height = height;
-				s.inner.configure(&self.device, &s.config);
-			}
-			None => panic!("impossível definir dimensões sem uma superfície."),
 		}
 	}
 
-	pub fn draw(&mut self) {
-		let Some(surface) = &mut self.surface else {
-			return;
-		};
+	pub fn configure_size(&self, surface: &mut RenderSurface, w: u32, h: u32) {
+		surface.config.width = w;
+		surface.config.height = h;
+		surface.inner.configure(&self.device, &surface.config);
+	}
 
+	pub fn draw(&mut self, surface: &RenderSurface) {
 		let frame = surface
 			.inner
 			.get_current_texture()

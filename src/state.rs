@@ -16,7 +16,7 @@ impl StateSystem {
 		Self {  }
 	}
 
-	pub fn update(&mut self, tick: Tick, input: &InputState) {
+	pub fn update(&mut self, _tick: Tick, _input: &InputState) {
 
 	}
 

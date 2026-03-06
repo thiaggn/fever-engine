@@ -1,12 +1,13 @@
+#![allow(unused)]
+
 use std::collections::HashSet;
 
 use winit::{
-	event::{ElementState, KeyEvent, MouseButton, WindowEvent},
+	event::{ElementState, KeyEvent, MouseButton},
 	keyboard::{KeyCode, PhysicalKey},
 };
 
 use winit::event::ElementState::*;
-use winit::event::WindowEvent::*;
 
 #[derive(Default)]
 pub struct InputState {

@@ -1,6 +1,6 @@
-use crate::input::InputState;
+use crate::cube::CubeRenderer;
 use pollster::FutureExt;
-use std::{borrow::Cow, sync::Arc};
+use std::sync::Arc;
 use winit::{dpi::PhysicalSize, window::Window};
 
 /// Formato de cores do frame buffer preferido pelo sistema de renderização.
@@ -34,13 +34,20 @@ impl RenderSystem {
 		let (device, queue) = adapter
 			.request_device(&wgpu::DeviceDescriptor {
 				label: None,
+				required_features: wgpu::Features::POLYGON_MODE_LINE,
 				..Default::default()
 			})
 			.block_on()
 			.expect("wgpu: a criação do device falhou.");
 
+		let context = RenderContext {
+			device: &device,
+			queue: &queue,
+			format: TEXTURE_FORMAT,
+		};
+
 		let mut renderers = RendererVec::new();
-		renderers.add(TriangleRenderer::new(&device, TEXTURE_FORMAT));
+		renderers.add(CubeRenderer::new(context));
 
 		Self {
 			device,
@@ -98,7 +105,7 @@ impl RenderSystem {
 				depth_slice: None,
 				resolve_target: None,
 				ops: wgpu::Operations {
-					load: wgpu::LoadOp::Clear(wgpu::Color::GREEN),
+					load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
 					store: wgpu::StoreOp::Store,
 				},
 			})],
@@ -108,9 +115,9 @@ impl RenderSystem {
 			multiview_mask: None,
 		});
 
-		for renderer in self.renderers.iter_mut() {
-			renderer.prepare();
-			renderer.render(&mut render_pass);
+		for r in self.renderers.iter_mut() {
+			r.prepare();
+			r.render(&mut render_pass);
 		}
 
 		render_pass.forget_lifetime();
@@ -119,8 +126,14 @@ impl RenderSystem {
 	}
 }
 
+pub struct RenderContext<'a> {
+	pub device: &'a wgpu::Device,
+	pub queue: &'a wgpu::Queue,
+	pub format: wgpu::TextureFormat,
+}
+
 /// Um contrato para componentes renderizáveis no pipeline.
-trait Renderer {
+pub trait Renderer {
 	/// Prepara recursos em tempo de execução, a cada passe.
 	fn prepare(&mut self);
 
@@ -143,56 +156,5 @@ impl RendererVec {
 
 	pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut Box<dyn Renderer>> {
 		self.items.iter_mut()
-	}
-}
-
-struct TriangleRenderer {
-	pipeline: wgpu::RenderPipeline,
-}
-
-impl TriangleRenderer {
-	fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
-		let shader =
-			device.create_shader_module(wgpu::include_wgsl!("../assets/shader.wgsl"));
-
-		let pipeline_layout =
-			device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-				label: None,
-				bind_group_layouts: &[],
-				immediate_size: 0,
-			});
-
-		let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-			label: None,
-			layout: Some(&pipeline_layout),
-			vertex: wgpu::VertexState {
-				module: &shader,
-				entry_point: Some("vs_main"),
-				buffers: &[],
-				compilation_options: Default::default(),
-			},
-			fragment: Some(wgpu::FragmentState {
-				module: &shader,
-				entry_point: Some("fs_main"),
-				compilation_options: Default::default(),
-				targets: &[Some(format.into())],
-			}),
-			primitive: wgpu::PrimitiveState::default(),
-			depth_stencil: None,
-			multisample: wgpu::MultisampleState::default(),
-			multiview_mask: None,
-			cache: None,
-		});
-
-		return Self { pipeline };
-	}
-}
-
-impl Renderer for TriangleRenderer {
-	fn prepare(&mut self) {}
-
-	fn render(&self, pass: &mut wgpu::RenderPass) {
-		pass.set_pipeline(&self.pipeline);
-		pass.draw(0..3, 0..1);
 	}
 }

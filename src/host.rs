@@ -1,19 +1,16 @@
-use std::{
-	sync::Arc,
-	time::{Duration, Instant},
-};
+use std::{sync::Arc, time::Instant};
 
 use winit::{
 	application::ApplicationHandler,
 	dpi::{PhysicalSize, Size},
 	event::WindowEvent,
 	event_loop::ActiveEventLoop,
-	window::{Window, WindowAttributes, WindowId},
+	window::{Window, WindowId},
 };
 
 use crate::{
-	input::{InputState, InputSystem},
-	renderer::{self, RenderSurface, RenderSystem},
+	input::InputSystem,
+	renderer::{RenderSurface, RenderSystem},
 	state::{StateSystem, Tick},
 };
 
@@ -47,7 +44,7 @@ impl Host {
 			self.renderer.draw(surface);
 		}
 	}
-	
+
 	fn resize(&mut self, width: u32, height: u32) {
 		if let Some(surface) = &mut self.surface {
 			self.renderer.configure_size(surface, width, height);
@@ -58,8 +55,9 @@ impl Host {
 impl ApplicationHandler for Host {
 	fn resumed(&mut self, event_loop: &ActiveEventLoop) {
 		let attr = Window::default_attributes()
-			.with_title("Fever")
-			.with_maximized(true);
+			.with_resizable(false)
+			.with_inner_size(PhysicalSize::new(1280, 720))
+			.with_title("Fever");
 
 		let window: Arc<Window> = event_loop
 			.create_window(attr)
@@ -69,16 +67,26 @@ impl ApplicationHandler for Host {
 		self.surface = Some(self.renderer.create_surface(window.clone()));
 	}
 
-	fn window_event(&mut self, el: &ActiveEventLoop, _: WindowId, ev: WindowEvent) {
+	fn window_event(&mut self, ev_loop: &ActiveEventLoop, _: WindowId, ev: WindowEvent) {
 		use winit::event::WindowEvent::*;
 
-		#[rustfmt::skip]
 		match ev {
-			KeyboardInput { event, .. }      => self.input.update_keyboard(event),
-			MouseInput { state, button, .. } => self.input.update_mouse(state, button),
-			RedrawRequested                  => self.redraw(),
-			CloseRequested                   => el.exit(),
-			Resized(size)                    => self.resize(size.width, size.height),
+			KeyboardInput { event, .. } => {
+				self.input.update_keyboard(event);
+			}
+			MouseInput { state, button, .. } => {
+				self.input.update_mouse(state, button);
+			}
+			RedrawRequested => {
+				self.redraw();
+			}
+			CloseRequested => {
+				self.surface = None;
+				ev_loop.exit();
+			}
+			Resized(size) => {
+				self.resize(size.width, size.height);
+			}
 			_ => {}
 		};
 	}
